@@ -17,17 +17,21 @@ python check_vendored.py --processor     # CPU, tokenizer files only: what the t
 python check_vendored.py --full          # GPU: whole pipeline, official vs vendored, max pixel diff must be 0
 ```
 
-In bf16 the model is about 29 GB: a 6.2B transformer, the Qwen2.5-VL-7B text encoder (8.3B) and the FLUX.1 VAE. One
-48 GB GPU holds all of it. On smaller cards, pass `--cpu_offload` (about 18 GB according to the model card).
+In bf16 the model is about 29 GB: a 6.2B transformer, the Qwen2.5-VL-7B text encoder (8.3B) and the FLUX.1 VAE.
+Without offload, a 48 GB GPU ran out of memory on the second bench image (2026-11-26), so pass `--cpu_offload` there:
+the text encoder, transformer and VAE then take turns on the GPU (about 18 GB according to the model card).
 
 ## Run
 
 ```bash
-python infer_baseline.py --dataset_root ../3D-bench/image/mice_bench --exp_name smoke --sample_ids 06 09 276
-./run_2gpu.sh infer_baseline.py --dataset_root ../3D-bench/image/mice_bench --exp_name turbo_mice
-./run_2gpu.sh infer_baseline.py --dataset_root ../3D-bench/image/lomoe_bench --exp_name turbo_lomoe
-python infer_baseline.py --model meituan-longcat/LongCat-Image-Edit --exp_name base_mice    # 50 steps, CFG 4.5
+python infer_baseline.py --dataset_root ../3D-bench/image/mice_bench --exp_name smoke --sample_ids 06 09 276 --cpu_offload
+./run_2gpu.sh infer_baseline.py --dataset_root ../3D-bench/image/mice_bench --exp_name turbo_mice --cpu_offload
+./run_2gpu.sh infer_baseline.py --dataset_root ../3D-bench/image/lomoe_bench --exp_name turbo_lomoe --cpu_offload
+python infer_baseline.py --model meituan-longcat/LongCat-Image-Edit --exp_name base_mice --cpu_offload  # 50 steps, CFG 4.5
 ```
+
+`--cpu_offload` is a run-control flag: it is not part of the folder's settings, so a run can resume with or without
+it.
 
 Results go to `results/longcat_<exp_name>/{id}_result.png`, resized to the source size as in mice. Steps and
 guidance default to the model card's, and `args.json` records the values used. `stats_shard<k>.json` has the
@@ -69,7 +73,8 @@ seconds per image and the peak GPU memory.
 
 ## Plan
 
-1. Baseline (written; CPU checks pass, not yet run on GPU): `check_vendored.py --full`, then Turbo on both benches.
+1. Baseline (written; CPU checks pass and `check_vendored.py --full` passed on GPU, 2026-11-26): Turbo on both
+   benches, with `--cpu_offload` on 48 GB cards.
 2. Token assignment: grid masks, instance prompts and target-word spans in the text stream above. Open: whether
    each instance prompt is encoded with the source image.
 3. Binding: our processor in place of `LongCatImageAttnProcessor`, with mice's rules on `[text | target | source]`.

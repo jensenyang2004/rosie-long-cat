@@ -2,7 +2,7 @@
 Baseline: the official LongCat-Image-Edit-Turbo edit (vendored pipeline, no instance control) on MICE-Bench /
 LoMOE-Bench, one instruction per image (edit_inst_single). Steps and guidance default to the model card's (Turbo:
 8 steps, guidance 1). Run folder conventions in runs.py; stats_shard<k>.json has the time per image and peak GPU
-memory.
+memory. On 48 GB cards add --cpu_offload (without it the second image ran out of memory).
 
     python infer_baseline.py --dataset_root ../3D-bench/image/mice_bench --sample_ids 06 09 --exp_name smoke
     ./run_2gpu.sh infer_baseline.py --dataset_root ../3D-bench/image/mice_bench --exp_name turbo_mice
