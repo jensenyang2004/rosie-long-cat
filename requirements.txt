@@ -1,0 +1,12 @@
+# diffusers is pinned to the release the files in longcat/ were copied from; change both together.
+# Same pins as ../rosie-qwen, so its venv can be reused. The official LongCat repo pins transformers 4.57.1; the
+# tokenizer, the VL processor and the pipeline import are checked with transformers 5.23 (check_vendored.py
+# --processor). Never install these into the mice venv.
+diffusers==0.41.0
+transformers>=5.17
+torch>=2.6
+accelerate
+safetensors
+pillow
+numpy
+tqdm
