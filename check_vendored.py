@@ -11,6 +11,7 @@ Check that the vendored LongCat-Image-Edit code computes exactly what the instal
                                           image, same seed; saves both and prints the max pixel difference (0).
 """
 import argparse
+import gc
 import inspect
 import sys
 from pathlib import Path
@@ -142,7 +143,11 @@ def check_full(args) -> bool:
         print(name, type(pipe.transformer).__module__)
         out[name] = pipe(**call, generator=torch.Generator("cpu").manual_seed(0)).images[0]
         out[name].save(f"check_{name}_{args.sample_id}.png")
+        # free this pipeline before loading the next. With --cpu_offload, accelerate's hooks keep the models in
+        # a reference cycle, so `del` alone left the first ~29 GB in RAM while the second loaded (swapping)
+        pipe.remove_all_hooks()
         del pipe
+        gc.collect()
         torch.cuda.empty_cache()
     d = np.abs(np.asarray(out["official"], np.int16) - np.asarray(out["vendored"], np.int16)).max()
     print(f"max pixel difference: {d}  (check_official_{args.sample_id}.png, check_vendored_{args.sample_id}.png)")
