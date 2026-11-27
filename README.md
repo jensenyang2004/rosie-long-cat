@@ -29,6 +29,8 @@ the text encoder, transformer and VAE then take turns on the GPU (about 18 GB ac
 ## Run
 
 ```bash
+./run_all.sh mice                          # end to end, binding, steered (tuned defaults), 2 GPUs
+./run_all.sh both --sample_ids 06 09 276   # smoke test on both benches; NGPU=1 for one GPU, DRY=1 to print
 python infer_baseline.py --dataset_root ../3D-bench/image/mice_bench --exp_name smoke --sample_ids 06 09 276 --cpu_offload
 ./run_2gpu.sh infer_baseline.py --dataset_root ../3D-bench/image/mice_bench --exp_name turbo_mice --cpu_offload
 ./run_2gpu.sh infer_baseline.py --dataset_root ../3D-bench/image/lomoe_bench --exp_name turbo_lomoe --cpu_offload
@@ -64,6 +66,7 @@ seconds per image and the peak GPU memory.
 | `check_steer.py` | CPU checks: the rotation equals mice's `ResidualRotate` (needs `../mice`), the hooks read the anchors at the layout's positions, each term acts; `--pipeline` through the pipeline's own `__call__`. |
 | `show_tokens.py` | Each instance's token region (after strict carving) drawn on the source and on a run's results, to tell a token-attribution border from the model's. |
 | `steer_summary.py` | A steering run's `{id}_steer.json` per step and block kind (turns, cosine to the instruction anchor), optionally next to mice's run of the same sample. |
+| `run_all.sh` | End to end, binding only, and binding + steering on one or both benches; the tuned steering (ctc 0.5, src 0.6, bg 0.35, ins 0.025, centred over the prompts) by default, every value overridable from the environment. |
 | `runs.py`, `run_2gpu.sh` | Run-folder conventions and the two-GPU launcher, as in `../rosie-qwen`. |
 
 ## What differs from FLUX.2-klein (read from the diffusers code)
