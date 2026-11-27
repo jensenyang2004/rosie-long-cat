@@ -18,6 +18,8 @@ python check_vendored.py --full          # GPU: whole pipeline, official vs vend
 python check_binding.py                  # CPU, no weights: binding rules, leakage per block type, positions
 python check_binding.py --tokens         # CPU, tokenizer files only: the real layouts of bench samples
 python check_binding.py --pipeline       # CPU: the pipeline's own __call__ with tiny random VAE/transformer
+python check_steer.py                    # CPU: rotation == mice's ResidualRotate; hook slicing on a tiny model
+python check_steer.py --pipeline         # CPU: steering through the pipeline's own __call__
 ```
 
 In bf16 the model is about 29 GB: a 6.2B transformer, the Qwen2.5-VL-7B text encoder (8.3B) and the FLUX.1 VAE.
@@ -33,12 +35,13 @@ python infer_baseline.py --dataset_root ../3D-bench/image/mice_bench --exp_name 
 python infer_baseline.py --model meituan-longcat/LongCat-Image-Edit --exp_name base_mice --cpu_offload  # 50 steps, CFG 4.5
 python infer_bind.py --sample_ids 06 09 276 --exp_name bind_smoke --cpu_offload
 python infer_bind.py --sample_ids 06 09 276 --exp_name bind_smoke_stacked --prompt_pos stacked --cpu_offload
+python infer_steer.py --sample_ids 06 09 276 --exp_name rot_smoke --cpu_offload
 ```
 
 `--cpu_offload` is a run-control flag: it is not part of the folder's settings, so a run can resume with or without
 it.
 
-Results go to `results/longcat_<exp_name>/` (baseline) and `results/longcatbind_<exp_name>/` (binding) as `{id}_result.png`, resized to the source size as in mice. The binding run also writes `{id}_layout.json` (token counts, and `vision_diff`, which should be 0). Steps and
+Results go to `results/longcat_<exp_name>/` (baseline), `results/longcatbind_<exp_name>/` (binding) and `results/longcatrot_<exp_name>/` (binding + steering) as `{id}_result.png`, resized to the source size as in mice. The binding run also writes `{id}_layout.json` (token counts, and `vision_diff`, which should be 0); the steering run also `{id}_steer.json`, the per-(step, block) turns (deg) and cosines to the anchors. Steps and
 guidance default to the model card's, and `args.json` records the values used. `stats_shard<k>.json` has the
 seconds per image and the peak GPU memory.
 
@@ -56,6 +59,9 @@ seconds per image and the peak GPU memory.
 | `rosie/instance_edit.py` | One edit: wraps the pipeline's `encode_prompt` (global + instance prompts) and `prepare_latents` (image grid start), and installs the processor. |
 | `infer_bind.py` | Binding only, no steering, on the bench. Guidance 1 (Turbo) only. |
 | `check_binding.py` | CPU checks: tiny random model (rules, leakage, positions); `--tokens` with the real tokenizer and processor; `--pipeline`, the pipeline's own `__call__` with a tiny random VAE and transformer. |
+| `rosie/steer.py` | Rotation steering: block hooks that turn each block's update of the target tokens (mice's `residual_rotate.py`, same math). |
+| `infer_steer.py` | Binding + steering on the bench (mice's final strengths by default). |
+| `check_steer.py` | CPU checks: the rotation equals mice's `ResidualRotate` (needs `../mice`), the hooks read the anchors at the layout's positions, each term acts; `--pipeline` through the pipeline's own `__call__`. |
 | `runs.py`, `run_2gpu.sh` | Run-folder conventions and the two-GPU launcher, as in `../rosie-qwen`. |
 
 ## What differs from FLUX.2-klein (read from the diffusers code)
@@ -103,6 +109,15 @@ seconds per image and the peak GPU memory.
    global stream and every image token; each slot reads the vision span, itself and its instance's image tokens.
    Image-to-image attention stays open. Attention runs per row class on gathered keys, so no (n, n) mask is ever
    built. With the binding off it equals the model's processor exactly.
-4. Steering: mice's `ResidualRotate` hooks; the single-block hook adapts to the (text, image) pair.
+4. Steering (written 2026-11-27, CPU-checked, not yet run on GPU; binding ran normally on GPU, better than on
+   Qwen-2.1): mice's `ResidualRotate` math, rosie-qwen's port (equal to mice on random inputs). Defaults are the
+   paper's Ours (4B_ROT_mice_2): contact 0.9 on steps 0-1 (klein's steps 0-1 take sigma 1.0 -> 0.908, Turbo's
+   1.0 -> 0.905), source 0.25, background 0.35 and instruction 0.2 on every step, contact/source/background scaled by
+   sigma, every block (10 double + 20 single; mice steered all 25 of klein's, instruction 0.2 in both kinds). Both
+   block kinds take `(image = [target | source], text)` and return `(text, image)`, so one hook reads the source
+   write from the image stream and the target-word write from the text stream of the same block. There is no
+   cache, so the anchors are recomputed in every block and step, as in mice. Turbo has 8 steps where klein had 4, so
+   the every-step terms act twice as often over the same noise range: the first thing to tune if the edits come
+   out over-steered.
 
 License: Apache-2.0 (code and weights).

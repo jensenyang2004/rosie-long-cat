@@ -221,19 +221,15 @@ def check_tokens(args):
             report("   row classes rebuild the mask", exact, f"({n} classes, n = {L.n})")
 
 
-def check_pipeline(args):
-    """The pipeline's own __call__ through rosie.instance_edit.edit: tiny random VAE and transformer, the real
-    tokenizer, VL processor and scheduler config, a causal stub text encoder (hidden state j = mean of the token
-    embeddings up to j)."""
-    import numpy as np
+def tiny_pipeline():
+    """The vendored pipeline with a tiny random VAE and transformer (1 double + 1 single block), the real tokenizer,
+    VL processor and scheduler config, and a causal stub text encoder (hidden state j = mean of the token embeddings
+    up to j)."""
     from diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler
     from transformers import Qwen2Tokenizer, Qwen2VLProcessor
 
-    from bench import Bench
     from longcat import MODEL_ID, LongCatImageEditPipeline
     from longcat.transformer_longcat_image import LongCatImageTransformer2DModel
-    from rosie.instance_edit import edit
-    from rosie.tokens import GLOBAL_PROMPT
 
     tok = Qwen2Tokenizer.from_pretrained(MODEL_ID, subfolder="tokenizer")
     proc = Qwen2VLProcessor.from_pretrained(MODEL_ID, subfolder="text_processor")
@@ -257,6 +253,19 @@ def check_pipeline(args):
                                     transformer=transformer)
     pipe.text_encoder = stub
     pipe.set_progress_bar_config(disable=True)
+    return pipe
+
+
+def check_pipeline(args):
+    """The pipeline's own __call__ through rosie.instance_edit.edit, on tiny_pipeline()."""
+    import numpy as np
+
+    from bench import Bench
+    from rosie.instance_edit import edit
+    from rosie.tokens import GLOBAL_PROMPT
+
+    pipe = tiny_pipeline()
+    transformer = pipe.transformer
     s = Bench(args.dataset_root)[args.sample_ids[0]]
     steps = 2
     with torch.no_grad():

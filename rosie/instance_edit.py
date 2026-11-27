@@ -1,14 +1,16 @@
 """
-One instance-controlled edit: tokens (rosie/tokens.py) -> layout -> binding (rosie/binding.py) -> the vendored
-pipeline, wrapped at runtime (its encode_prompt and prepare_latents, the attention processors), never edited.
+One instance-controlled edit: tokens (rosie/tokens.py) -> layout -> binding (rosie/binding.py), optionally rotation
+steering (rosie/steer.py) -> the vendored pipeline, wrapped at runtime (its encode_prompt and prepare_latents, the
+attention processors, block hooks), never edited.
 """
 import inspect
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 import torch
 
 from bench import output_size
 from rosie.binding import binding
+from rosie.steer import RotationSteer, steering
 from rosie.tokens import GLOBAL_PROMPT, LOCAL_TEMPLATE, Layout, Prompter, build_layout, grid_masks
 
 
@@ -66,13 +68,15 @@ def instance_prompts(pipe, prep: dict):
 
 
 def edit(pipe, sample: dict, prompt_pos: str = "shared", strict: bool = True, bind: bool = True, seed: int = 0,
-         steps: int = 8):
+         steps: int = 8, steer: RotationSteer | None = None):
     """Returns (PIL image at the generation size, prep). Guidance 1 only (Turbo): with CFG the pipeline would also
-    encode a negative prompt, which this does not lay out."""
+    encode a negative prompt, which this does not lay out. steer: rotation steering; its per-(step, block) stats are
+    in steer.stats afterwards."""
     if prompt_pos == "shared" and not bind:
         raise ValueError("shared prompt positions need the binding (otherwise rows read slots at equal positions)")
     prep = prepare(Prompter.from_pipe(pipe), sample, prompt_pos, strict)
-    with instance_prompts(pipe, prep), binding(pipe.transformer, prep["layout"], bind):
+    steered = nullcontext() if steer is None else steering(pipe.transformer, steer, prep["layout"], pipe.scheduler)
+    with instance_prompts(pipe, prep), binding(pipe.transformer, prep["layout"], bind), steered:
         out = pipe(image=sample["image"], prompt=GLOBAL_PROMPT, num_inference_steps=steps, guidance_scale=1.0,
                    generator=torch.Generator("cpu").manual_seed(seed)).images[0]
     return out, prep
