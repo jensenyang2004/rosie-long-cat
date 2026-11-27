@@ -20,6 +20,7 @@ python check_binding.py --tokens         # CPU, tokenizer files only: the real l
 python check_binding.py --pipeline       # CPU: the pipeline's own __call__ with tiny random VAE/transformer
 python check_steer.py                    # CPU: rotation == mice's ResidualRotate; hook slicing on a tiny model
 python check_steer.py --pipeline         # CPU: steering through the pipeline's own __call__
+python check_single.py                   # CPU: steering without binding (one instruction): tokens, pipeline
 ```
 
 In bf16 the model is about 29 GB: a 6.2B transformer, the Qwen2.5-VL-7B text encoder (8.3B) and the FLUX.1 VAE.
@@ -38,12 +39,13 @@ python infer_baseline.py --model meituan-longcat/LongCat-Image-Edit --exp_name b
 python infer_bind.py --sample_ids 06 09 276 --exp_name bind_smoke --cpu_offload
 python infer_bind.py --sample_ids 06 09 276 --exp_name bind_smoke_stacked --prompt_pos stacked --cpu_offload
 python infer_steer.py --sample_ids 06 09 276 --exp_name rot_smoke --cpu_offload
+ONLY=single ./run_all.sh mice --sample_ids $(tr , ' ' < ../mice/paper/ablation_ids.txt)   # no binding, 50 ids
 ```
 
 `--cpu_offload` is a run-control flag: it is not part of the folder's settings, so a run can resume with or without
 it.
 
-Results go to `results/longcat_<exp_name>/` (baseline), `results/longcatbind_<exp_name>/` (binding) and `results/longcatrot_<exp_name>/` (binding + steering) as `{id}_result.png`, resized to the source size as in mice. The binding run also writes `{id}_layout.json` (token counts, and `vision_diff`, which should be 0); the steering run also `{id}_steer.json`, the per-(step, block) turns (deg) and cosines to the anchors. Steps and
+Results go to `results/longcat_<exp_name>/` (baseline), `results/longcatbind_<exp_name>/` (binding) and `results/longcatrot_<exp_name>/` (binding + steering), `results/longcatsingle_<exp_name>/` (steering without binding) as `{id}_result.png`, resized to the source size as in mice. The binding run also writes `{id}_layout.json` (token counts, and `vision_diff`, which should be 0); the steering run also `{id}_steer.json`, the per-(step, block) turns (deg) and cosines to the anchors. Steps and
 guidance default to the model card's, and `args.json` records the values used. `stats_shard<k>.json` has the
 seconds per image and the peak GPU memory.
 
@@ -63,6 +65,8 @@ seconds per image and the peak GPU memory.
 | `check_binding.py` | CPU checks: tiny random model (rules, leakage, positions); `--tokens` with the real tokenizer and processor; `--pipeline`, the pipeline's own `__call__` with a tiny random VAE and transformer. |
 | `rosie/steer.py` | Rotation steering: block hooks that turn each block's update of the target tokens (mice's `residual_rotate.py`, same math). |
 | `infer_steer.py` | Binding + steering on the bench (mice's final strengths by default). |
+| `infer_single.py` | Steering without binding: the official one-instruction edit with the steering hooks; the masks are used only by the steering, the instruction anchor is the target phrase inside the instruction. |
+| `check_single.py` | CPU checks for it: the phrase positions in the pipeline's own text stream, found rates on both benches, strengths 0 == the baseline's call. |
 | `check_steer.py` | CPU checks: the rotation equals mice's `ResidualRotate` (needs `../mice`), the hooks read the anchors at the layout's positions, each term acts; `--pipeline` through the pipeline's own `__call__`. |
 | `show_tokens.py` | Each instance's token region (after strict carving) drawn on the source and on a run's results, to tell a token-attribution border from the model's. |
 | `steer_summary.py` | A steering run's `{id}_steer.json` per step and block kind (turns, cosine to the instruction anchor), optionally next to mice's run of the same sample. |
@@ -128,5 +132,11 @@ seconds per image and the peak GPU memory.
    (global and instances, padding included), `--ins_centre text` minus the mean over the whole text stream (vision
    span too). In the user's first GPU runs (2026-11-27) the raw instruction term broke the image and source turning
    helped.
+5. Steering without binding (written 2026-11-27, CPU-checked). On the full MICE-Bench (258 ids, CLIP via
+   `../3D-bench/eval_longcat.py`) LongCat's own one-instruction edit had Loc C 26.44; binding 24.59, with instances
+   left partly edited (median 54% of mask pixels changed against 90%); binding + steering 24.46. `infer_single.py`
+   keeps the baseline's call and adds only the steering. Instance k's instruction anchor is its fg_prompt (minus the
+   article, plural allowed) inside edit_inst_single: found for 85% of MICE-Bench and 64% of LoMOE-Bench instances;
+   the others get no instruction term. Centring (`--ins_centre prompts`) is over the one slot, padding included.
 
 License: Apache-2.0 (code and weights).

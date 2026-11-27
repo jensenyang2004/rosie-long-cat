@@ -42,7 +42,24 @@ def parse_args():
     p.add_argument("--no_strict", action="store_true", help="keep overlapping masks (mice: --strict_masks on)")
     p.add_argument("--no_bind", action="store_true", help="no text binding (the model's own attention); needs "
                    "--prompt_pos stacked")
+    add_steer_args(p)
+    args = p.parse_args()
+    check_model(p, args)
+    if args.no_bind and args.prompt_pos == "shared":
+        p.error("--no_bind needs --prompt_pos stacked")
+    return args, make_steer(p, args)
 
+
+def check_model(p, args):
+    if args.steps is None:
+        if args.model not in SAMPLING:
+            p.error(f"--model {args.model}: pass --steps")
+        args.steps = SAMPLING[args.model][0]
+    if args.model in SAMPLING and SAMPLING[args.model][1] != 1.0:
+        p.error(f"{args.model} samples with CFG; the binding and steering support guidance 1 only")
+
+
+def add_steer_args(p):
     p.add_argument("--rot_ctc", type=float, default=0.9, help="contact: fraction of the way from each neighbour's "
                    "write to orthogonal, times the pair weight")
     p.add_argument("--rot_src", type=float, default=0.25, help="source: fraction of the way from the source write "
@@ -67,15 +84,9 @@ def parse_args():
     p.add_argument("--bg_margin", type=float, default=1.0, help="background tokens this close to an instance are free")
     p.add_argument("--bg_tau", type=float, default=2.0, help="background ramp width after the margin (tokens)")
     p.add_argument("--max_turn", type=float, default=90.0, help="cap on the total turn per token (deg)")
-    args = p.parse_args()
-    if args.steps is None:
-        if args.model not in SAMPLING:
-            p.error(f"--model {args.model}: pass --steps")
-        args.steps = SAMPLING[args.model][0]
-    if args.model in SAMPLING and SAMPLING[args.model][1] != 1.0:
-        p.error(f"{args.model} samples with CFG; the binding and steering support guidance 1 only")
-    if args.no_bind and args.prompt_pos == "shared":
-        p.error("--no_bind needs --prompt_pos stacked")
+
+
+def make_steer(p, args) -> RotationSteer:
     terms = () if args.sigma_terms == "none" else tuple(args.sigma_terms.split(","))
     if set(terms) - set(TERMS):
         p.error(f"--sigma_terms: use {','.join(TERMS)} or none")
@@ -91,11 +102,16 @@ def parse_args():
             p.error(f"--{flag}: unknown {sorted(chosen - names)}")
         return chosen
 
-    return args, terms, block_set("blocks", args.blocks), block_set("ins_blocks", args.ins_blocks)
+    return RotationSteer(rot_ctc=args.rot_ctc, rot_src=args.rot_src, rot_bg=args.rot_bg, rot_ins=args.rot_ins,
+                         ctc_steps=steps(args.ctc_steps), src_steps=steps(args.src_steps),
+                         bg_steps=steps(args.bg_steps), ins_steps=steps(args.ins_steps), sigma_terms=terms,
+                         blocks=block_set("blocks", args.blocks), ins_blocks=block_set("ins_blocks", args.ins_blocks),
+                         ins_centre=args.ins_centre, local_tau=args.local_tau, bg_margin=args.bg_margin,
+                         bg_tau=args.bg_tau, max_turn_deg=args.max_turn)
 
 
 def main():
-    args, terms, blocks, ins_blocks = parse_args()
+    args, steer = parse_args()
     save_dir = run_folder(args, "longcatrot")
     bench = Bench(args.dataset_root)
     ids = todo(bench, args, save_dir)
@@ -107,12 +123,6 @@ def main():
         return
     pipe = load_pipeline(args.model, args.device, cpu_offload=args.cpu_offload)
     save_environment(save_dir, args, args.model)
-    steer = RotationSteer(rot_ctc=args.rot_ctc, rot_src=args.rot_src, rot_bg=args.rot_bg, rot_ins=args.rot_ins,
-                          ctc_steps=steps(args.ctc_steps), src_steps=steps(args.src_steps),
-                          bg_steps=steps(args.bg_steps), ins_steps=steps(args.ins_steps), sigma_terms=terms,
-                          blocks=blocks, ins_blocks=ins_blocks, ins_centre=args.ins_centre,
-                          local_tau=args.local_tau, bg_margin=args.bg_margin, bg_tau=args.bg_tau,
-                          max_turn_deg=args.max_turn)
     cuda = torch.cuda.is_available() and args.device.startswith("cuda")
     if cuda:
         torch.cuda.reset_peak_memory_stats()

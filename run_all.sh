@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End to end (the official edit, one instruction), binding only, and binding + steering, in that order, on one or
 # both benches. Steering defaults are the tuned values (2026-11-27): ctc 0.5, src 0.6, bg 0.35, ins 0.025 with the
-# centred instruction anchor (minus the mean update over every prompt slot, padding included).
+# centred instruction anchor (minus the mean update over every prompt slot, padding included). ONLY=single runs the
+# same steering without binding, on the official one-instruction edit (infer_single.py).
 #
 #   ./run_all.sh mice                            all three on MICE-Bench, one GPU
 #   ./run_all.sh both                            MICE-Bench, then LoMOE-Bench
@@ -9,15 +10,17 @@
 #                                                only, e.g. --sample_ids, --overwrite)
 #   GPU=1 ./run_all.sh lomoe                     on GPU 1 (CUDA_VISIBLE_DEVICES; default: as already set)
 #   ONLY="steer" INS=0.05 ./run_all.sh mice      only the steered run, another instruction strength
+#   ONLY=single ./run_all.sh mice                steering without binding (one instruction, masks for steering only)
 #   DRY=1 ./run_all.sh both                      print the commands without running them
 #
 # Environment (defaults):
 #   GPU (unset = the visible GPU)   OFFLOAD 1 (--cpu_offload; 0 = off)
-#   ONLY "baseline bind steer"   CTC 0.5   SRC 0.6   BG 0.35   INS 0.025   INS_CENTRE prompts (raw = the raw anchor)
+#   ONLY "baseline bind steer" (or any of them and single)   CTC 0.5   SRC 0.6   BG 0.35   INS 0.025   INS_CENTRE prompts (raw = the raw anchor)
 #   TAG (appended to every exp name)
 #
 # Results: results/longcat_turbo_<bench>, results/longcatbind_bind_<bench>,
-#          results/longcatrot_rot_<bench>_c<CTC>_s<SRC>_b<BG>_i<INS>_<INS_CENTRE>; logs in logs/<exp name>.log.
+#          results/longcatrot_rot_<bench>_c<CTC>_s<SRC>_b<BG>_i<INS>_<INS_CENTRE>,
+#          results/longcatsingle_single_<bench>_c<CTC>_s<SRC>_b<BG>_i<INS>_<INS_CENTRE>; logs in logs/<exp name>.log.
 # A finished sample is skipped, so rerunning the same command resumes.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -61,6 +64,7 @@ for b in "${BENCHES[@]}"; do
   base="turbo_${b}${TAG}"
   bind="bind_${b}${TAG}"
   rot="rot_${b}_c${CTC}_s${SRC}_b${BG}_i${INS}_${INS_CENTRE}${TAG}"
+  single="single_${b}_c${CTC}_s${SRC}_b${BG}_i${INS}_${INS_CENTRE}${TAG}"
   if [[ " ${ONLY} " == *" baseline "* ]]; then
     run "${base}" infer_baseline.py --dataset_root "${root}" --exp_name "${base}" ${COMMON[@]+"${COMMON[@]}"} "$@"
     count "results/longcat_${base}"
@@ -74,6 +78,12 @@ for b in "${BENCHES[@]}"; do
       --rot_ctc "${CTC}" --rot_src "${SRC}" --rot_bg "${BG}" --rot_ins "${INS}" ${CENTRE_ARG[@]+"${CENTRE_ARG[@]}"} \
       ${COMMON[@]+"${COMMON[@]}"} "$@"
     count "results/longcatrot_${rot}"
+  fi
+  if [[ " ${ONLY} " == *" single "* ]]; then
+    run "${single}" infer_single.py --dataset_root "${root}" --exp_name "${single}" \
+      --rot_ctc "${CTC}" --rot_src "${SRC}" --rot_bg "${BG}" --rot_ins "${INS}" ${CENTRE_ARG[@]+"${CENTRE_ARG[@]}"} \
+      ${COMMON[@]+"${COMMON[@]}"} "$@"
+    count "results/longcatsingle_${single}"
   fi
 done
 echo "== $(date '+%F %T') done"

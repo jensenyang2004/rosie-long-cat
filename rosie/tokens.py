@@ -87,6 +87,21 @@ class Prompter:
             tgt_words = span(t0, t0 + len(tgt))
         return dict(ids=ids, src_words=src_words, tgt_words=tgt_words)
 
+    def phrases(self, content: str, phrases: list) -> dict:
+        """The slot's tokens for one free-form instruction (the bench's edit_inst_single), and per phrase the slot
+        positions of every whole-word, case-insensitive occurrence of it, plural -s/-es allowed ([] if it does not
+        occur in the slot). Paraphrases are not matched: a shorter fallback (the phrase's last words) maps different
+        targets to the same words ("fork" for two forks)."""
+        import re
+        ids = self.instruction(content)["ids"]
+        offsets = self.tokenizer(content, add_special_tokens=False, return_offsets_mapping=True)["offset_mapping"]
+        words = []
+        for ph in phrases:
+            pat = r"\b" + re.escape(ph) + r"(?:s|es)?\b"
+            spans = [m.span() for m in re.finditer(pat, content, re.IGNORECASE)] if ph else []
+            words.append([i for i, (a, b) in enumerate(offsets) if b > a and any(a < e and b > s for s, e in spans)])
+        return dict(ids=ids, words=words)
+
 
 def grid_masks(masks: list, H: int, W: int, strict: bool = True) -> list:
     """Instance masks on the H x W latent grid (nearest, as mice's resize_mask). strict: each mask loses the tokens
@@ -137,7 +152,7 @@ class Layout:
 
     def summary(self) -> dict:
         return dict(n=self.n, grid=[self.H, self.W], n_vis=self.n_vis, slot_len=self.slot_len,
-                    n_text=self.n_text, instances=len(self.local), inst=[len(i) for i in self.inst],
+                    n_text=self.n_text, instances=len(self.inst), inst=[len(i) for i in self.inst],
                     tgt_words=[len(w) for w in self.tgt_words], prompt_pos=self.prompt_pos, img_start=self.img_start)
 
 
@@ -164,3 +179,17 @@ def build_layout(n_vis: int, slot_len: int, locals_: list, masks: list, H: int, 
     inst = [m.reshape(-1).nonzero(as_tuple=True)[0] for m in masks]
     return Layout(src.stop, H, W, n_vis, slot_len, slice(0, n_vis), slice(0, n_glob), local, tgt, src, inst,
                   src_words, tgt_words, prompt_pos, text_pos, img_start)
+
+
+def build_single_layout(n_vis: int, slot_len: int, words: list, masks: list, H: int, W: int) -> Layout:
+    """The pipeline's own sequence for one instruction, [vision span | instruction slot] [target] [source] at its own
+    positions, for steering without binding (no instance slots). words: Prompter.phrases()["words"], instance k's
+    target words in the slot; masks: grid_masks()."""
+    assert len(words) == len(masks), f"{len(words)} target phrases, {len(masks)} masks (Bench.paired)"
+    n_glob = n_vis + slot_len
+    HW = H * W
+    tgt, src = slice(n_glob, n_glob + HW), slice(n_glob + HW, n_glob + 2 * HW)
+    tgt_words = [torch.tensor([n_vis + i for i in w], dtype=torch.long) for w in words]
+    inst = [m.reshape(-1).nonzero(as_tuple=True)[0] for m in masks]
+    return Layout(src.stop, H, W, n_vis, slot_len, slice(0, n_vis), slice(0, n_glob), [], tgt, src, inst,
+                  [torch.zeros(0, dtype=torch.long)] * len(masks), tgt_words, "single", torch.arange(n_glob), n_glob)
