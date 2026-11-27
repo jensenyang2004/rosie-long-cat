@@ -3,27 +3,27 @@
 # both benches. Steering defaults are the tuned values (2026-11-27): ctc 0.5, src 0.6, bg 0.35, ins 0.025 with the
 # centred instruction anchor (minus the mean update over every prompt slot, padding included).
 #
-#   ./run_all.sh mice                            all three on MICE-Bench, 2 GPUs
+#   ./run_all.sh mice                            all three on MICE-Bench, one GPU
 #   ./run_all.sh both                            MICE-Bench, then LoMOE-Bench
 #   ./run_all.sh mice --sample_ids 06 09 276     smoke test: extra args go to all three scripts (run-control flags
 #                                                only, e.g. --sample_ids, --overwrite)
-#   NGPU=1 ./run_all.sh lomoe                    one GPU
+#   GPU=1 ./run_all.sh lomoe                     on GPU 1 (CUDA_VISIBLE_DEVICES; default: as already set)
 #   ONLY="steer" INS=0.05 ./run_all.sh mice      only the steered run, another instruction strength
 #   DRY=1 ./run_all.sh both                      print the commands without running them
 #
 # Environment (defaults):
-#   NGPU 2 (2 = run_2gpu.sh with GPU0/GPU1, 1 = python on the visible GPU)   OFFLOAD 1 (--cpu_offload; 0 = off)
+#   GPU (unset = the visible GPU)   OFFLOAD 1 (--cpu_offload; 0 = off)
 #   ONLY "baseline bind steer"   CTC 0.5   SRC 0.6   BG 0.35   INS 0.025   INS_CENTRE prompts (raw = the raw anchor)
 #   TAG (appended to every exp name)
 #
 # Results: results/longcat_turbo_<bench>, results/longcatbind_bind_<bench>,
-#          results/longcatrot_rot_<bench>_c<CTC>_s<SRC>_b<BG>_i<INS>_<INS_CENTRE>; logs in logs/.
+#          results/longcatrot_rot_<bench>_c<CTC>_s<SRC>_b<BG>_i<INS>_<INS_CENTRE>; logs in logs/<exp name>.log.
 # A finished sample is skipped, so rerunning the same command resumes.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 BENCH="${1:?usage: ./run_all.sh mice|lomoe|both [extra args for all three scripts]}"; shift
-NGPU="${NGPU:-2}"
+[ -n "${GPU:-}" ] && export CUDA_VISIBLE_DEVICES="${GPU}"
 ONLY="${ONLY:-baseline bind steer}"
 CTC="${CTC:-0.5}"; SRC="${SRC:-0.6}"; BG="${BG:-0.35}"; INS="${INS:-0.025}"
 INS_CENTRE="${INS_CENTRE:-prompts}"
@@ -47,11 +47,7 @@ run() {  # run <log name> <script> <args...>
   local log="$1" script="$2"; shift 2
   echo "== $(date '+%F %T') ${script} $*"
   [ "${DRY:-0}" = 1 ] && return 0
-  if [ "${NGPU}" = 2 ]; then
-    LOG_TAG="${log}_" ./run_2gpu.sh "${script}" "$@"
-  else
-    python "${script}" "$@" 2>&1 | tee "logs/${log}.log"
-  fi
+  python "${script}" "$@" 2>&1 | tee "logs/${log}.log"
 }
 
 count() {  # count <run folder>

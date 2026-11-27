@@ -29,8 +29,8 @@ the text encoder, transformer and VAE then take turns on the GPU (about 18 GB ac
 ## Run
 
 ```bash
-./run_all.sh mice                          # end to end, binding, steered (tuned defaults), 2 GPUs
-./run_all.sh both --sample_ids 06 09 276   # smoke test on both benches; NGPU=1 for one GPU, DRY=1 to print
+./run_all.sh mice                          # end to end, binding, steered (tuned defaults), one GPU
+./run_all.sh both --sample_ids 06 09 276   # smoke test on both benches; GPU=1 to pick a GPU, DRY=1 to print
 python infer_baseline.py --dataset_root ../3D-bench/image/mice_bench --exp_name smoke --sample_ids 06 09 276 --cpu_offload
 ./run_2gpu.sh infer_baseline.py --dataset_root ../3D-bench/image/mice_bench --exp_name turbo_mice --cpu_offload
 ./run_2gpu.sh infer_baseline.py --dataset_root ../3D-bench/image/lomoe_bench --exp_name turbo_lomoe --cpu_offload
