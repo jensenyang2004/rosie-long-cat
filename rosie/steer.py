@@ -17,6 +17,8 @@ Anchors, all from the same block's own updates in the same forward (no cache on 
   g_j  normalize(mean over instance j of d): the target's updates.
   s_i  normalize(centred update of the source token at the same grid position i): the image stream's source part.
   u_k  normalize(mean update of instance k's target-word tokens), raw (mice --sem_ref target): the text stream.
+       ins_centre "prompts": minus the mean update over every instruction slot (global and instances, padding
+       included); "text": minus the mean over the whole text stream (vision span too). Raw by default.
 
 Both block types take (hidden_states = [target | source], encoder_hidden_states = text) and return (text, image),
 so one hook serves the 10 double and the 20 single blocks. mice steered every block of klein (5 double, 20 single)
@@ -195,6 +197,8 @@ class RotationSteer:
     ins_steps: tuple | None = None
     sigma_terms: tuple = ("ctc", "src", "bg")
     blocks: set | None = None  # block names ("double_3", "single_7") steered; None = every block
+    ins_blocks: set | None = None  # blocks with the instruction term (within `blocks`); None = every block
+    ins_centre: str | None = None  # None = raw u_k; "prompts" / "text": minus the mean text update (see top)
     local_tau: float = 2.0
     bg_margin: float = 1.0
     bg_tau: float = 2.0
@@ -240,7 +244,23 @@ class RotationSteer:
         return dict(ctc=self.rot_ctc * f("ctc") if on(self.ctc_steps) else 0.0,
                     src=self.rot_src * f("src") if on(self.src_steps) else 0.0,
                     bg=self.rot_bg * f("bg") if on(self.bg_steps) else 0.0,
-                    ins=self.rot_ins * f("ins") if on(self.ins_steps) else 0.0)
+                    ins=self.rot_ins * f("ins") if on(self.ins_steps) and (self.ins_blocks is None or
+                                                                           name in self.ins_blocks) else 0.0)
+
+    def _instruction(self, Dt: torch.Tensor, words: list) -> torch.Tensor:
+        """u_k from the text stream's update Dt [B, n_text, D]: raw, or minus the mean over the prompts / the text.
+        Logs the mean cosine between the raw and the centred anchors (ins_raw_cos)."""
+        if self.ins_centre is None:
+            return instruction_directions(Dt, words)
+        if self.ins_centre not in ("prompts", "text"):
+            raise ValueError(f"ins_centre {self.ins_centre!r}: None, 'prompts' or 'text'")
+        Dt = Dt.float()
+        start = self.L.n_vis if self.ins_centre == "prompts" else 0
+        U = instruction_directions(Dt - Dt[:, start:self.L.n_text].mean(dim=1, keepdim=True), words)
+        raw = instruction_directions(Dt, words)
+        on = [k for k, w in enumerate(words) if len(w)]
+        self._raw_cos = float((U[:, on] * raw[:, on]).sum(-1).mean()) if on else float("nan")
+        return U
 
     def block_hook(self, name: str):
         def hook(module, args, kwargs, out):
@@ -255,9 +275,11 @@ class RotationSteer:
                 return out
             masks, pair_w, bg_w, words = self._tensors(img_out.device)
             s_dir = source_direction(img_out[:, HW:] - img_in[:, HW:]) if st["src"] > 0 or st["bg"] > 0 else None
-            U = instruction_directions(txt_out - txt_in, words) if st["ins"] > 0 else None
+            U = self._instruction(txt_out - txt_in, words) if st["ins"] > 0 else None
             new, stat = rotate(img_in[:, :HW], img_out[:, :HW], masks, pair_w, bg_w, s_dir, U, st["ctc"],
                                st["src"], st["bg"], st["ins"], self.max_turn_deg * math.pi / 180)
+            if U is not None and self.ins_centre is not None:
+                stat["ins_raw_cos"] = self._raw_cos
             self.stats.append(dict(step=self.step, layer=name, sigma=self.sigma, **stat))
             return txt_out, torch.cat([new, img_out[:, HW:]], dim=1)
         return hook

@@ -62,6 +62,8 @@ seconds per image and the peak GPU memory.
 | `rosie/steer.py` | Rotation steering: block hooks that turn each block's update of the target tokens (mice's `residual_rotate.py`, same math). |
 | `infer_steer.py` | Binding + steering on the bench (mice's final strengths by default). |
 | `check_steer.py` | CPU checks: the rotation equals mice's `ResidualRotate` (needs `../mice`), the hooks read the anchors at the layout's positions, each term acts; `--pipeline` through the pipeline's own `__call__`. |
+| `show_tokens.py` | Each instance's token region (after strict carving) drawn on the source and on a run's results, to tell a token-attribution border from the model's. |
+| `steer_summary.py` | A steering run's `{id}_steer.json` per step and block kind (turns, cosine to the instruction anchor), optionally next to mice's run of the same sample. |
 | `runs.py`, `run_2gpu.sh` | Run-folder conventions and the two-GPU launcher, as in `../rosie-qwen`. |
 
 ## What differs from FLUX.2-klein (read from the diffusers code)
@@ -118,6 +120,10 @@ seconds per image and the peak GPU memory.
    write from the image stream and the target-word write from the text stream of the same block. There is no
    cache, so the anchors are recomputed in every block and step, as in mice. Turbo has 8 steps where klein had 4, so
    the every-step terms act twice as often over the same noise range: the first thing to tune if the edits come
-   out over-steered.
+   out over-steered. `--ins_blocks double|single|<names>` limits the instruction term to some blocks;
+   `--ins_centre prompts` turns toward the target words' update minus the mean update over every instruction slot
+   (global and instances, padding included), `--ins_centre text` minus the mean over the whole text stream (vision
+   span too). In the user's first GPU runs (2026-11-27) the raw instruction term broke the image and source turning
+   helped.
 
 License: Apache-2.0 (code and weights).

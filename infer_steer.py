@@ -6,6 +6,9 @@ token counts, stats_shard<k>.json the time per image and peak GPU memory. On 48 
 
     python infer_steer.py --sample_ids 06 09 276 --exp_name rot_smoke --cpu_offload
     python infer_steer.py --sample_ids 06 09 276 --exp_name rot_noins --rot_ins 0 --cpu_offload     (one term off)
+    python infer_steer.py --sample_ids 09 --exp_name rot_ins_double --ins_blocks double --cpu_offload
+    python infer_steer.py --sample_ids 06 09 276 --exp_name rot_inscentre --ins_centre prompts --cpu_offload
+    python steer_summary.py results/longcatrot_rot_smoke 09 --mice ../3D-bench/baselines/4B_ICRS_rotation_mice
     ./run_2gpu.sh infer_steer.py --exp_name rot_mice --cpu_offload
 """
 import argparse
@@ -55,6 +58,11 @@ def parse_args():
     p.add_argument("--sigma_terms", type=str, default="ctc,src,bg", help="terms scaled by the step's sigma, or none")
     p.add_argument("--blocks", type=str, default="all", help="blocks steered: \"all\", or names like "
                    "double_0,single_3 (10 double, 20 single)")
+    p.add_argument("--ins_blocks", type=str, default=None, help="blocks with the instruction term: \"double\", "
+                   "\"single\", or names like double_0,single_3; default every block")
+    p.add_argument("--ins_centre", type=str, default=None, choices=["prompts", "text"],
+                   help="instruction anchor minus the mean text update over every instruction slot, padding "
+                        "included (prompts), or over the whole text stream, vision span too (text); default raw")
     p.add_argument("--local_tau", type=float, default=2.0, help="contact pair-weight falloff (tokens)")
     p.add_argument("--bg_margin", type=float, default=1.0, help="background tokens this close to an instance are free")
     p.add_argument("--bg_tau", type=float, default=2.0, help="background ramp width after the margin (tokens)")
@@ -71,15 +79,23 @@ def parse_args():
     terms = () if args.sigma_terms == "none" else tuple(args.sigma_terms.split(","))
     if set(terms) - set(TERMS):
         p.error(f"--sigma_terms: use {','.join(TERMS)} or none")
-    blocks = None if args.blocks == "all" else set(args.blocks.split(","))
     names = {f"double_{i}" for i in range(10)} | {f"single_{i}" for i in range(20)}
-    if blocks is not None and blocks - names:
-        p.error(f"--blocks: unknown {sorted(blocks - names)}")
-    return args, terms, blocks
+
+    def block_set(flag, value):
+        if value in (None, "all"):
+            return None
+        if value in ("double", "single"):
+            return {n for n in names if n.startswith(value)}
+        chosen = set(value.split(","))
+        if chosen - names:
+            p.error(f"--{flag}: unknown {sorted(chosen - names)}")
+        return chosen
+
+    return args, terms, block_set("blocks", args.blocks), block_set("ins_blocks", args.ins_blocks)
 
 
 def main():
-    args, terms, blocks = parse_args()
+    args, terms, blocks, ins_blocks = parse_args()
     save_dir = run_folder(args, "longcatrot")
     bench = Bench(args.dataset_root)
     ids = todo(bench, args, save_dir)
@@ -94,7 +110,8 @@ def main():
     steer = RotationSteer(rot_ctc=args.rot_ctc, rot_src=args.rot_src, rot_bg=args.rot_bg, rot_ins=args.rot_ins,
                           ctc_steps=steps(args.ctc_steps), src_steps=steps(args.src_steps),
                           bg_steps=steps(args.bg_steps), ins_steps=steps(args.ins_steps), sigma_terms=terms,
-                          blocks=blocks, local_tau=args.local_tau, bg_margin=args.bg_margin, bg_tau=args.bg_tau,
+                          blocks=blocks, ins_blocks=ins_blocks, ins_centre=args.ins_centre,
+                          local_tau=args.local_tau, bg_margin=args.bg_margin, bg_tau=args.bg_tau,
                           max_turn_deg=args.max_turn)
     cuda = torch.cuda.is_available() and args.device.startswith("cuda")
     if cuda:

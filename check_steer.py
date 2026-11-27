@@ -8,8 +8,9 @@ Checks for the rotation steering (rosie/steer.py). CPU, no weights.
            3 steps:
            a. all strengths 0: the hooks leave the output unchanged
            b. in every block and step, the steered image stream == rotate() of the block's own output with the
-              anchors read at the layout's joint positions (source = L.src, target words = L.tgt_words), the source
-              part and the text stream untouched
+              anchors read at the layout's joint positions (source = L.src, target words = L.tgt_words; the centred
+              instruction anchors minus the mean over the slots or the whole text), the source part and the text
+              stream untouched
            c. each term alone changes the output and turns its tokens; contact only on its steps; the sigma terms
               scaled by the step's sigma
     python check_steer.py --pipeline --sample_ids 06   the pipeline's own __call__ (check_binding.tiny_pipeline):
@@ -27,7 +28,7 @@ import torch.nn.functional as F
 
 from check_binding import H, W, img_ids, synthetic_layout, tiny_model
 from rosie.binding import binding
-from rosie.steer import (RotationSteer, bg_weights, instruction_directions, pair_weights, rotate, source_direction,
+from rosie.steer import (RotationSteer, bg_weights, pair_weights, rotate, source_direction,
                          steering)
 
 STRENGTHS = dict(ctc=0.9, src=0.25, bg=0.35, ins=0.2)
@@ -113,6 +114,50 @@ def run(model, L, latents, text, steer=None, capture=None):
     return outs
 
 
+def check_anchors(model, L, latents, text, ref, masks, pw, bw, every, centre):
+    """In every block and step the steered target == rotate() of the block's raw output, with the anchors read at the
+    layout's joint positions; for a centred instruction anchor, the mean over the slots ([n_vis, n_text)) or the
+    whole text ([0, n_text)) is subtracted from the target words' mean."""
+    HW = H * W
+    steer = RotationSteer(ins_centre=centre, **every)
+    cap = {}
+    out = run(model, L, latents, text, steer, cap)
+    moved = max((a - b).abs().max().item() for a, b in zip(out, ref))
+    worst, untouched, n = 0.0, True, 0
+    for name, c in cap.items():
+        for step, (raw, steered) in enumerate(zip(c["raw"], c["steered"])):
+            t_in, i_in, t_out, i_out = raw
+            joint_in, joint_out = torch.cat([t_in, i_in], 1), torch.cat([t_out, i_out], 1)
+            D = (joint_out - joint_in).float()  # the block's update, read at the layout's joint positions
+            sig = SIGMAS[step]
+            st = dict(ctc=STRENGTHS["ctc"] * sig if step in (0, 1) else 0.0, src=STRENGTHS["src"] * sig,
+                      bg=STRENGTHS["bg"] * sig, ins=STRENGTHS["ins"])
+            U = torch.zeros(1, len(L.tgt_words), D.shape[-1])
+            for k, words in enumerate(L.tgt_words):
+                u = D[0, words].mean(0)
+                if centre is not None:
+                    u = u - D[0, (L.n_vis if centre == "prompts" else 0):L.n_text].mean(0)
+                U[0, k] = F.normalize(u, dim=-1)
+            want, _ = rotate(joint_in[:, L.tgt], joint_out[:, L.tgt], masks, pw, bw, source_direction(D[:, L.src]),
+                             U, st["ctc"], st["src"], st["bg"], st["ins"], math.pi / 2)
+            worst = max(worst, (steered[3][:, :HW] - want).abs().max().item())
+            untouched &= torch.equal(steered[3][:, HW:], i_out[:, HW:]) and torch.equal(steered[2], t_out)
+            n += 1
+    report(f"[u_k {centre or 'raw'}] steered target == rotate() with anchors at the layout's positions "
+           f"({n} block edits)", worst < 1e-5 and moved > 0, f"max|diff|={worst:.2g}, output moved {moved:.2g}")
+    report(f"[u_k {centre or 'raw'}] source part and text stream untouched", untouched)
+    if centre is None:
+        steps_ctc = sorted({s["step"] for s in steer.stats if s.get("rot_ctc", 0) > 0})
+        scaled = all(abs(s["rot_src"] - 0.25 * s["sigma"]) < 1e-9 and abs(s["rot_ins"] - 0.2) < 1e-9
+                     for s in steer.stats)
+        report("contact on steps 0, 1 only; src scaled by sigma, ins not", steps_ctc == [0, 1] and scaled,
+               f"(contact steps {steps_ctc}, {len(steer.stats)} stats entries)")
+    else:
+        c = [s["ins_raw_cos"] for s in steer.stats]
+        report(f"[u_k {centre}] cosine raw vs centred anchor logged", len(c) == n,
+               f"(mean {sum(c) / len(c):.2f})")
+
+
 def check_tiny():
     L = synthetic_layout()
     HW = H * W
@@ -127,37 +172,12 @@ def check_tiny():
         d = max((a - b).abs().max().item() for a, b in zip(ref, run(model, L, latents, text, zero)))
         report("all strengths 0 == no steering", d == 0, f"max|diff|={d:.2g}")
 
-        steer = RotationSteer(**every)
-        cap = {}
-        out = run(model, L, latents, text, steer, cap)
-        moved = max((a - b).abs().max().item() for a, b in zip(out, ref))
         masks = torch.zeros(len(L.inst), HW, dtype=torch.bool)
         for k, idx in enumerate(L.inst):
             masks[k, idx] = True
-        pw, bw = pair_weights(masks, H, W, steer.local_tau), bg_weights(masks, H, W, steer.bg_margin, steer.bg_tau)
-        worst, untouched, n = 0.0, True, 0
-        for name, c in cap.items():
-            for step, (raw, steered) in enumerate(zip(c["raw"], c["steered"])):
-                t_in, i_in, t_out, i_out = raw
-                joint_in, joint_out = torch.cat([t_in, i_in], 1), torch.cat([t_out, i_out], 1)
-                D = joint_out - joint_in  # the block's update, read at the layout's joint positions
-                sig = SIGMAS[step]
-                st = dict(ctc=STRENGTHS["ctc"] * sig if step in (0, 1) else 0.0, src=STRENGTHS["src"] * sig,
-                          bg=STRENGTHS["bg"] * sig, ins=STRENGTHS["ins"])
-                want, _ = rotate(joint_in[:, L.tgt], joint_out[:, L.tgt], masks, pw, bw, source_direction(D[:, L.src]),
-                                 instruction_directions(D, L.tgt_words), st["ctc"], st["src"], st["bg"], st["ins"],
-                                 math.pi / 2)
-                worst = max(worst, (steered[3][:, :HW] - want).abs().max().item())
-                untouched &= torch.equal(steered[3][:, HW:], i_out[:, HW:]) and torch.equal(steered[2], t_out)
-                n += 1
-        report(f"steered target == rotate() with anchors at the layout's positions ({n} block edits)",
-               worst < 1e-5 and moved > 0, f"max|diff|={worst:.2g}, output moved {moved:.2g}")
-        report("source part and text stream untouched", untouched)
-        steps_ctc = sorted({s["step"] for s in steer.stats if s.get("rot_ctc", 0) > 0})
-        scaled = all(abs(s["rot_src"] - 0.25 * s["sigma"]) < 1e-9 and abs(s["rot_ins"] - 0.2) < 1e-9
-                     for s in steer.stats)
-        report("contact on steps 0, 1 only; src scaled by sigma, ins not", steps_ctc == [0, 1] and scaled,
-               f"(contact steps {steps_ctc}, {len(steer.stats)} stats entries)")
+        pw, bw = pair_weights(masks, H, W, 2.0), bg_weights(masks, H, W, every["bg_margin"], every["bg_tau"])
+        for centre in (None, "prompts", "text"):
+            check_anchors(model, L, latents, text, ref, masks, pw, bw, every, centre)
 
         for t in STRENGTHS:
             st = {f"rot_{u}": (v if u == t else 0.0) for u, v in STRENGTHS.items()}
