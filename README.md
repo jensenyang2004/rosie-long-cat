@@ -15,6 +15,9 @@ requirements.txt`. Never install these into the mice venv.
 python check_vendored.py                 # CPU, no weights: vendored == installed diffusers
 python check_vendored.py --processor     # CPU, tokenizer files only: what the text stream holds
 python check_vendored.py --full          # GPU: whole pipeline, official vs vendored, max pixel diff must be 0
+python check_binding.py                  # CPU, no weights: binding rules, leakage per block type, positions
+python check_binding.py --tokens         # CPU, tokenizer files only: the real layouts of bench samples
+python check_binding.py --pipeline       # CPU: the pipeline's own __call__ with tiny random VAE/transformer
 ```
 
 In bf16 the model is about 29 GB: a 6.2B transformer, the Qwen2.5-VL-7B text encoder (8.3B) and the FLUX.1 VAE.
@@ -28,12 +31,14 @@ python infer_baseline.py --dataset_root ../3D-bench/image/mice_bench --exp_name 
 ./run_2gpu.sh infer_baseline.py --dataset_root ../3D-bench/image/mice_bench --exp_name turbo_mice --cpu_offload
 ./run_2gpu.sh infer_baseline.py --dataset_root ../3D-bench/image/lomoe_bench --exp_name turbo_lomoe --cpu_offload
 python infer_baseline.py --model meituan-longcat/LongCat-Image-Edit --exp_name base_mice --cpu_offload  # 50 steps, CFG 4.5
+python infer_bind.py --sample_ids 06 09 276 --exp_name bind_smoke --cpu_offload
+python infer_bind.py --sample_ids 06 09 276 --exp_name bind_smoke_stacked --prompt_pos stacked --cpu_offload
 ```
 
 `--cpu_offload` is a run-control flag: it is not part of the folder's settings, so a run can resume with or without
 it.
 
-Results go to `results/longcat_<exp_name>/{id}_result.png`, resized to the source size as in mice. Steps and
+Results go to `results/longcat_<exp_name>/` (baseline) and `results/longcatbind_<exp_name>/` (binding) as `{id}_result.png`, resized to the source size as in mice. The binding run also writes `{id}_layout.json` (token counts, and `vision_diff`, which should be 0). Steps and
 guidance default to the model card's, and `args.json` records the values used. `stats_shard<k>.json` has the
 seconds per image and the peak GPU memory.
 
@@ -46,6 +51,11 @@ seconds per image and the peak GPU memory.
 | `bench.py` | MICE-Bench / LoMOE-Bench loader, and `output_size()`, the pipeline's generation size. |
 | `infer_baseline.py` | The official edit with one instruction (`edit_inst_single`) and no instance control. |
 | `check_vendored.py` | Equality checks for the vendored code, and the text-stream check. |
+| `rosie/tokens.py` | Token assignment: the vision span, the instruction slots, target-word positions, grid masks, the joint-sequence `Layout` and its text positions. |
+| `rosie/binding.py` | The binding rules (mice's final binding), the row classes they split into, and `BindAttnProcessor`. |
+| `rosie/instance_edit.py` | One edit: wraps the pipeline's `encode_prompt` (global + instance prompts) and `prepare_latents` (image grid start), and installs the processor. |
+| `infer_bind.py` | Binding only, no steering, on the bench. Guidance 1 (Turbo) only. |
+| `check_binding.py` | CPU checks: tiny random model (rules, leakage, positions); `--tokens` with the real tokenizer and processor; `--pipeline`, the pipeline's own `__call__` with a tiny random VAE and transformer. |
 | `runs.py`, `run_2gpu.sh` | Run-folder conventions and the two-GPU launcher, as in `../rosie-qwen`. |
 
 ## What differs from FLUX.2-klein (read from the diffusers code)
@@ -75,9 +85,24 @@ seconds per image and the peak GPU memory.
 
 1. Baseline (written; CPU checks pass and `check_vendored.py --full` passed on GPU, 2026-11-26): Turbo on both
    benches, with `--cpu_offload` on 48 GB cards.
-2. Token assignment: grid masks, instance prompts and target-word spans in the text stream above. Open: whether
-   each instance prompt is encoded with the source image.
-3. Binding: our processor in place of `LongCatImageAttnProcessor`, with mice's rules on `[text | target | source]`.
+2. Token assignment (written 2026-11-27, CPU-checked): every prompt is encoded the pipeline's way, with the source
+   image (the only encoding this edit model was trained on). The encoder is causal and the vision span comes first,
+   so the vision span is the same in every encoding (the stub check and `vision_diff` confirm this). It is kept
+   once, and each prompt keeps its whole 512-token slot, padding included:
+   `[vision span | global slot " "] [slot 1] ... [slot K] [target] [source]`. Each instance adds 512 tokens: on MICE-Bench the
+   median sample has 12.7k tokens against about 9.1k for the baseline, and the largest, 74 (30 instances), 24.6k.
+   Samples 167, 255 and 259 have one mask more than prompts; mice has no result for them, and `infer_bind.py`
+   skips them (`Bench.paired`).
+   Text positions: `--prompt_pos shared` (default) puts every slot at the global slot's positions and the image
+   where a one-prompt edit has it, so each token sees its prompt and the image as in an ordinary edit. `stacked`
+   is what the pipeline does with a longer text: each slot adds 512 positions before the image. On Qwen-2.1 the
+   stacked layout let only the first prompt through.
+3. Binding (written 2026-11-27, CPU-checked, not yet run on GPU): `BindAttnProcessor` in place of
+   `LongCatImageAttnProcessor`, with mice's final rules (`rosie/binding.py`). A prompt is its vision span plus its slot:
+   an instance's target tokens read the vision span, their slot and every image token; the background reads the
+   global stream and every image token; each slot reads the vision span, itself and its instance's image tokens.
+   Image-to-image attention stays open. Attention runs per row class on gathered keys, so no (n, n) mask is ever
+   built. With the binding off it equals the model's processor exactly.
 4. Steering: mice's `ResidualRotate` hooks; the single-block hook adapts to the (text, image) pair.
 
 License: Apache-2.0 (code and weights).

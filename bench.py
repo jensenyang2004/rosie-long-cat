@@ -45,5 +45,11 @@ class Bench:
             edit_inst_single=e["edit_inst_single"],
         )
 
+    def paired(self, sample_id: str) -> bool:
+        """One mask per instance prompt. Three MICE-Bench samples (167, 255, 259) have one mask more than prompts;
+        mice has no result for them (Ours has 259 of 262), so the instance-controlled runs skip them too."""
+        e = self.entries[sample_id]
+        return len(_quoted(e["mask_path"])) == len(_quoted(e["fg_prompt"])) == len(_quoted(e.get("source_prompt", "")))
+
     def shard(self, num_shards: int = 1, shard_id: int = 0) -> list[str]:
         return self.ids[shard_id::num_shards]
